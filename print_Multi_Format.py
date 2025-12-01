@@ -102,6 +102,5 @@ def main() -> None:
 if __name__ == "__main__":
     main()
     
-    print("画面を閉じるには何かキーを押してください . . .")
-    import msvcrt
-    msvcrt.getch()
+    print("5秒後に自動的に画面を閉じます...")
+    time.sleep(5)
