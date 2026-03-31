@@ -1,7 +1,7 @@
 import sys
-import os
 import time
 import logging
+import traceback
 from pathlib import Path
 
 import pythoncom
@@ -9,228 +9,265 @@ import win32com.client
 import win32api
 
 
-# ===== 設定 =====
-
-SUPPORTED = [".docx", ".doc", ".xlsx", ".xls", ".pdf"]
-
-LOG_FILE = "print_log.log"
-
-
-# ===== ログ =====
+# ==========================
+# ログ設定
+# ==========================
 
 def setup_logging():
+
+    if getattr(sys, "frozen", False):
+        base = Path(sys.executable).parent
+    else:
+        base = Path(__file__).parent
+
+    log_file = base / "print_Multi_Format.log"
 
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s [%(levelname)s] %(message)s",
         handlers=[
-            logging.FileHandler(LOG_FILE, encoding="utf-8"),
+            logging.FileHandler(log_file, encoding="utf-8"),
             logging.StreamHandler()
         ]
     )
 
 
-# ===== Excel 印刷 =====
+# ==========================
+# 入力展開（フォルダ対応）
+# ==========================
 
-def print_excel(excel, file_path: Path):
+def expand_inputs(paths):
 
-    wb = excel.Workbooks.Open(str(file_path), ReadOnly=True)
+    result = []
+
+    for p in paths:
+
+        path = Path(p)
+
+        if path.is_dir():
+
+            for f in path.rglob("*"):
+
+                if f.suffix.lower() in [
+                    ".doc", ".docx",
+                    ".xls", ".xlsx",
+                    ".pdf"
+                ]:
+                    result.append(str(f))
+
+        else:
+
+            result.append(str(path))
+
+    return result
+
+
+# ==========================
+# Word印刷
+# ==========================
+
+def print_word(word, file):
+
+    doc = None
 
     try:
 
-        ws = wb.ActiveSheet
+        logging.info(f"WORD PRINT START {file.name}")
 
-        logging.info(f"Excel印刷: {file_path.name}")
+        doc = word.Documents.Open(str(file), ReadOnly=True)
 
-        ws.PrintOut()
+        doc.PrintOut(Background=False)
+
+        logging.info("WORD PRINT SENT")
 
     finally:
 
-        wb.Close(False)
+        if doc:
+            doc.Close(False)
 
 
-# ===== Word 印刷 =====
+# ==========================
+# Excel印刷
+# ==========================
 
-def print_word(word, file_path: Path):
+def print_excel(excel, file):
 
-    doc = word.Documents.Open(str(file_path), ReadOnly=True)
+    wb = None
 
     try:
 
-        logging.info(f"Word印刷: {file_path.name}")
+        logging.info(f"EXCEL PRINT START {file.name}")
 
-        doc.PrintOut()
+        wb = excel.Workbooks.Open(str(file), ReadOnly=True)
+
+        wb.PrintOut()
+
+        time.sleep(2)
+
+        logging.info("EXCEL PRINT SENT")
 
     finally:
 
-        doc.Close(False)
+        if wb:
+            wb.Close(False)
 
 
-# ===== PDF 印刷 =====
+# ==========================
+# PDF印刷
+# ==========================
 
-def print_pdf(file_path: Path):
+def print_pdf(file):
 
-    logging.info(f"PDF印刷: {file_path.name}")
+    logging.info(f"PDF PRINT START {file.name}")
 
     win32api.ShellExecute(
         0,
         "print",
-        str(file_path),
+        str(file),
         None,
-        ".",
+        str(file.parent),
         0
     )
 
+    time.sleep(4)
 
-# ===== ファイル処理 =====
-
-def process_file(excel, word, file_path: Path):
-
-    ext = file_path.suffix.lower()
-
-    if ext in [".xlsx", ".xls"]:
-
-        print_excel(excel, file_path)
-
-    elif ext in [".docx", ".doc"]:
-
-        print_word(word, file_path)
-
-    elif ext == ".pdf":
-
-        print_pdf(file_path)
-
-    else:
-
-        logging.warning(f"未対応形式: {file_path}")
+    logging.info("PDF PRINT SENT")
 
 
-# ===== ファイル検証 =====
+# ==========================
+# メイン処理
+# ==========================
 
-def validate_file(file_path: Path):
+def process_files(files):
 
-    if not file_path.exists():
+    pythoncom.CoInitialize()
 
-        logging.error(f"ファイルが存在しません: {file_path}")
-        return False
-
-    if file_path.suffix.lower() not in SUPPORTED:
-
-        logging.warning(f"未対応拡張子: {file_path}")
-        return False
-
-    return True
-
-
-# ===== Office起動 =====
-
-def start_office():
-
-    excel = win32com.client.Dispatch("Excel.Application")
-    word = win32com.client.Dispatch("Word.Application")
-
-    excel.Visible = False
-    word.Visible = False
-
-    excel.DisplayAlerts = False
-    word.DisplayAlerts = False
-
-    return excel, word
-
-
-# ===== Office終了 =====
-
-def close_office(excel, word):
+    excel = None
+    word = None
 
     try:
-        excel.Quit()
-    except:
-        pass
 
-    try:
-        word.Quit()
-    except:
-        pass
+        logging.info("START OFFICE")
+
+        excel = win32com.client.DispatchEx("Excel.Application")
+        excel.Visible = False
+        excel.DisplayAlerts = False
+        logging.info("EXCEL OK")
+
+        word = win32com.client.DispatchEx("Word.Application")
+        word.Visible = False
+        word.DisplayAlerts = False
+        logging.info("WORD OK")
+
+        for f in files:
+
+            path = Path(f).resolve()
+
+            logging.info(f"PROCESS {path}")
+
+            if not path.exists():
+                raise FileNotFoundError(path)
+
+            ext = path.suffix.lower()
+
+            if ext in [".doc", ".docx"]:
+                print_word(word, path)
+
+            elif ext in [".xls", ".xlsx"]:
+                print_excel(excel, path)
+
+            elif ext == ".pdf":
+                print_pdf(path)
+
+            else:
+                logging.warning(f"UNSUPPORTED FILE {path.name}")
+
+    finally:
+
+        time.sleep(2)
+
+        if excel:
+            excel.Quit()
+
+        if word:
+            word.Quit()
+
+        pythoncom.CoUninitialize()
 
 
-# ===== メイン =====
+# ==========================
+# エントリーポイント
+# ==========================
 
 def main():
 
     setup_logging()
 
-    logging.info("印刷処理開始")
-
-    if sys.platform != "win32":
-
-        logging.error("Windows専用スクリプトです")
-        return
-
-    args = sys.argv[1:]
-
-    if not args:
-
-        logging.warning("印刷対象ファイルが指定されていません")
-        return
-
-    files = [Path(a) for a in args]
-
-    pythoncom.CoInitialize()
-
-    excel, word = start_office()
-
-    results = []
+    logging.info("PROGRAM START")
 
     try:
 
-        for file_path in files:
+        # ダブルクリック起動
+        if len(sys.argv) == 1:
 
-            if not validate_file(file_path):
+            print()
+            print("このツールはファイルをドラッグして使用します。")
+            print()
+            print("使い方")
+            print("1. Word / Excel / PDF ファイルを用意")
+            print("2. そのファイルをこのEXEにドラッグ")
+            print()
+            print("Enterキーを押すと終了します")
 
-                results.append((file_path, False))
-                continue
+            input()
+            return False
 
-            try:
+        files = expand_inputs(sys.argv[1:])
 
-                process_file(excel, word, file_path)
+        if len(files) == 0:
 
-                results.append((file_path, True))
+            print("印刷対象ファイルが見つかりません")
+            input()
+            return False
 
-            except Exception as e:
+        process_files(files)
 
-                logging.error(f"印刷失敗: {file_path} : {e}")
+        logging.info("PROGRAM END")
 
-                results.append((file_path, False))
+        print()
+        print("処理が完了しました")
 
-    finally:
+        return True
 
-        close_office(excel, word)
+    except Exception:
 
-        pythoncom.CoUninitialize()
+        error_text = traceback.format_exc()
 
-    logging.info("----- 印刷結果 -----")
+        logging.error(error_text)
 
-    for file, result in results:
+        print()
+        print("*** エラーが発生しました ***")
+        print()
+        print(error_text)
 
-        status = "成功" if result else "失敗"
-
-        logging.info(f"{status} : {file}")
-
-    logging.info("すべての処理が完了しました")
+        return False
 
 
-# ===== エントリーポイント =====
+# ==========================
+# 実行
+# ==========================
 
 if __name__ == "__main__":
 
-    try:
+    success = main()
 
-        main()
+    if success:
 
-    except Exception as e:
+        print("3秒後に自動終了します...")
+        time.sleep(3)
 
-        logging.exception("致命的エラー")
+    else:
 
-    print("\n処理完了（3秒後に閉じます）")
-
-    time.sleep(3)
+        print()
+        print("Enterキーを押すと終了します")
+        input()
